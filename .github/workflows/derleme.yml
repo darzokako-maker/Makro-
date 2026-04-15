@@ -1,29 +1,37 @@
-name: Modern-Makro-Build
+name: Gemini-Pro-Macro-Build
 
-on: [push]
+on:
+  push:
+    branches: [ "main" ] # Kodunu ana dizine yüklediğinde çalışır
+  workflow_dispatch: # Manuel olarak da başlatmanı sağlar
 
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
+
       - name: Python Kur
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Gereklilikleri Yukle
+      - name: Kütüphaneleri Yükle
         run: |
-          pip install pyinstaller customtkinter mouse keyboard
+          python -m pip install --upgrade pip
+          pip install pyinstaller customtkinter pynput
 
-      - name: Exe Yap (Modern Menu)
-        # --collect-all: CustomTkinter'ın tema dosyalarını içine gömer
-        run: pyinstaller --onefile --noconsole --collect-all customtkinter main.py
+      - name: Tek Dosya Exe Oluştur
+        # --collect-all customtkinter: Menü temalarının exe içinde çalışması için şarttır
+        # --noconsole: Açıldığında arkada siyah CMD penceresi göstermez
+        run: |
+          pyinstaller --onefile --noconsole --collect-all customtkinter main.py
 
-      - name: Yukle
+      - name: Exe Dosyasını Teslim Et
         uses: actions/upload-artifact@v4
         with:
-          name: Modern-Makro-Programi
+          name: Gaming-Macro-Build
           path: dist/*.exe
           
