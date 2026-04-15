@@ -1,0 +1,24 @@
+name: Makro-Exe-Olusturucu
+
+on: [push] # Kod her değiştiğinde çalışır
+
+jobs:
+  build_job:
+    runs-on: windows-latest
+    steps:
+      - name: Kodlari Cek
+        uses: actions/checkout@v4
+
+      - name: MSBuild Kur
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Derleme Islemi
+        # 'Projen.sln' yerine kendi solution dosyanın adını yazmalısın
+        run: msbuild Projen.sln /p:Configuration=Release /p:Platform=x64
+
+      - name: Exe Dosyasini Disari Aktar
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hazir-Makro-Programi
+          path: x64/Release/*.exe
+          
