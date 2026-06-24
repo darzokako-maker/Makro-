@@ -1,21 +1,23 @@
 import customtkinter as ctk
 from pynput import mouse, keyboard
-import pydirectinput  # Donanım seviyesi tıklama için yeni kütüphane
 import threading
 import time
 import random
 import math
+import ctypes
 
-# Pydirectinput fail-safe özelliğini kapatıyoruz (Makronun aniden durmaması için)
-pydirectinput.FAILSAFE = False
+# Windows API / Syscall Tıklama Sabitleri
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
 
 class YahyaUltimateMacro(ctk.CTk):
     def __init__(self):
         super().__init__()
 
         # Pencere Ayarları
-        self.title("Yahya Yapımı - Ultimate Pro v3")
-        self.geometry("550 =x950")
+        self.title("Yahya Yapımı - Ultimate Pro v4 (Syscall Edition)")
         self.geometry("550x950")
         ctk.set_appearance_mode("dark")
         
@@ -27,7 +29,7 @@ class YahyaUltimateMacro(ctk.CTk):
         self.rod_key = "y"             
         
         self.cps = 14
-        self.combo_cps = 12            # Kombo esnasındaki özel CPS (YENİ)
+        self.combo_cps = 12            
         self.rod_select_ms = 45        
         self.rod_cast_ms = 45          
         self.global_ms_offset = 0      
@@ -39,7 +41,6 @@ class YahyaUltimateMacro(ctk.CTk):
         self.keyboard_controller = keyboard.Controller()
         self.left_pressed = False
         
-        # Yazılımsal döngü koruma bayrağı
         self.ignore_software_click = False
         self.click_count = 0
 
@@ -55,10 +56,10 @@ class YahyaUltimateMacro(ctk.CTk):
         self.slider_cps = ctk.CTkSlider(self.cps_frame, from_=1, to=30, command=self.update_cps)
         self.slider_cps.set(self.cps); self.slider_cps.pack(pady=5, padx=10)
 
-        # Kombo CPS Paneli (YENİ)
+        # Kombo CPS Paneli (Rekt Esnasındaki Vuruş Ayarı)
         self.combo_cps_frame = ctk.CTkFrame(self, border_width=1, border_color="#1f538d")
         self.combo_cps_frame.pack(pady=5, padx=20, fill="x")
-        self.label_combo_cps = ctk.CTkLabel(self.combo_cps_frame, text=f"Kombo Vuruş Hızı: {self.combo_cps} CPS", font=("Arial", 13, "bold"), text_color="#63B8FF")
+        self.label_combo_cps = ctk.CTkLabel(self.combo_cps_frame, text=f"Kombo Vuruş Hızı (Kılıç Hasarı): {self.combo_cps} CPS", font=("Arial", 13, "bold"), text_color="#63B8FF")
         self.label_combo_cps.pack(pady=5)
         self.slider_combo_cps = ctk.CTkSlider(self.combo_cps_frame, from_=1, to=30, command=self.update_combo_cps, button_color="#1f538d")
         self.slider_combo_cps.set(self.combo_cps); self.slider_combo_cps.pack(pady=5, padx=10)
@@ -105,7 +106,7 @@ class YahyaUltimateMacro(ctk.CTk):
         self.start_listeners()
 
     def update_cps(self, v): self.cps = int(v); self.label_cps.configure(text=f"Normal Saldırı Hızı: {self.cps} CPS")
-    def update_combo_cps(self, v): self.combo_cps = int(v); self.label_combo_cps.configure(text=f"Kombo Vuruş Hızı: {self.combo_cps} CPS")
+    def update_combo_cps(self, v): self.combo_cps = int(v); self.label_combo_cps.configure(text=f"Kombo Vuruş Hızı (Kılıç Hasarı): {self.combo_cps} CPS")
     def update_global_offset(self, v): self.global_ms_offset = int(v); self.lbl_global.configure(text=f"GENEL GECİKME OFSETİ: {self.global_ms_offset}ms")
     def update_ms(self, v, type):
         val = int(v)
@@ -132,60 +133,70 @@ class YahyaUltimateMacro(ctk.CTk):
         if k == self.cps_key: self.is_cps_active = not self.is_cps_active
         if k == self.rod_key: self.is_rod_active = not self.is_rod_active
 
-    def execute_human_click(self, target_cps):
+    def execute_syscall_click(self, target_cps):
         """
-        Sürücü düzeyinde (pydirectinput) çalışan insansı tıklama sistemi.
-        target_cps parametresi sayesinde normal veya kombo modu hızını dinamik alır.
+        Donanım / Sürücü katmanını bypass eden alt seviye işletim sistemi çağrısı (Syscall benzeri).
+        İnsansı ritim ve dinamik basılı tutma sürelerini içerir.
         """
         base_cycle_time = 1.0 / target_cps
         
         self.click_count += 1
-        wave_modifier = math.sin(self.click_count * 0.1) * (base_cycle_time * 0.08)
-        random_jitter = random.uniform(-base_cycle_time * 0.12, base_cycle_time * 0.12)
+        wave_modifier = math.sin(self.click_count * 0.15) * (base_cycle_time * 0.07)
+        random_jitter = random.uniform(-base_cycle_time * 0.10, base_cycle_time * 0.10)
         
-        final_cycle_time = max(0.012, base_cycle_time + wave_modifier + random_jitter)
+        final_cycle_time = max(0.010, base_cycle_time + wave_modifier + random_jitter)
         press_duration = final_cycle_time * random.uniform(0.35, 0.45)
         release_duration = final_cycle_time - press_duration
 
-        # Pydirectinput ile Donanım Seviyesi Tıklama Simülasyonu
+        # Doğrudan Win32 API Çekirdek Giriş Enjeksiyonu (Anti-Cheat Bypass)
         self.ignore_software_click = True
-        pydirectinput.mouseDown(button='left')
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
         time.sleep(press_duration)
         
-        pydirectinput.mouseUp(button='left')
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
         time.sleep(max(0.002, release_duration))
 
+    def execute_syscall_right_click(self):
+        """Olta atmak için kullanılan güvenli sağ tık çağrısı."""
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+        time.sleep(random.uniform(0.015, 0.025)) # Kısa basılı tutma payı
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+
     def full_auto_rod_engine(self):
+        """
+        Mükemmel Rekt Döngüsü: Olta atılırken kılıç vuruşları (Sol Tık) kesilmez.
+        Sistem arkada sürekli kılıçla düzgün hasar çıkartırken eşzamanlı olta fırlatır.
+        """
         while True:
             if self.is_rod_active and self.left_pressed:
                 sel_delay = max(5, self.rod_select_ms + self.global_ms_offset) / 1000.0
                 cast_delay = max(5, self.rod_cast_ms + self.global_ms_offset) / 1000.0
                 
-                # 1. ADIM: Oltayı Seç ve At
+                # [REKT BAŞLANGICI] Kılıçla vurmaya devam ederken bir yandan oltaya geçiş sinyali gönder
                 self.keyboard_controller.press(self.rod_slot); self.keyboard_controller.release(self.rod_slot)
-                time.sleep(sel_delay + random.uniform(0.002, 0.007))
+                time.sleep(sel_delay + random.uniform(0.002, 0.005))
                 
-                # Sürücü seviyesinde sağ tık
-                pydirectinput.rightClick()
-                time.sleep(cast_delay + random.uniform(0.002, 0.007))
+                # Oltayı fırlat (Rakibi sersemlet)
+                self.execute_syscall_right_click()
+                time.sleep(cast_delay + random.uniform(0.002, 0.005))
                 
-                # 2. ADIM: Kılıca Dön
+                # Hemen kılıç slotuna geri dön
                 self.keyboard_controller.press(self.sword_slot); self.keyboard_controller.release(self.sword_slot)
-                time.sleep(0.02 + random.uniform(0.001, 0.004))
                 
-                # 3. ADIM: Yoğun İnsansı Vuruş (Ayarlanan Kombo CPS'i ile)
-                end_time = time.time() + random.uniform(0.65, 0.75)
+                # [DÜZGÜN HASAR PENCERESİ] Olta isabet etti, şimdi ayarlanan Kombo CPS ile rüzgar gibi esme vakti
+                end_time = time.time() + random.uniform(0.70, 0.85)
                 while time.time() < end_time and self.is_rod_active and self.left_pressed:
-                    self.execute_human_click(target_cps=self.combo_cps) # Yeni Kombo CPS değeri gönderiliyor
+                    self.execute_syscall_click(target_cps=self.combo_cps)
                 
-                time.sleep(random.uniform(0.04, 0.08))
+                time.sleep(random.uniform(0.03, 0.06)) # Kısa insansı nefeslenme gecikmesi
             else:
                 time.sleep(0.1)
 
     def click_engine(self):
         while True:
+            # Normal makro modu açıkken ve kombo modu aktif değilken düzgün sol tık makrosu
             if self.is_cps_active and self.left_pressed and not self.is_rod_active:
-                self.execute_human_click(target_cps=self.cps) # Normal CPS değeri gönderiliyor
+                self.execute_syscall_click(target_cps=self.cps)
             else:
                 time.sleep(0.01)
 
@@ -207,4 +218,4 @@ class YahyaUltimateMacro(ctk.CTk):
 if __name__ == "__main__":
     app = YahyaUltimateMacro()
     app.mainloop()
-    
+                
