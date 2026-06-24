@@ -18,10 +18,18 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Pip Önbelleğini Ayarla (Hızlı Derleme İçin)
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Kütüphaneleri Yükle
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller customtkinter pynput
+          pip install pyinstaller customtkinter pynput pydirectinput
 
       - name: Tek Dosya Exe Oluştur
         # --collect-all customtkinter: Menü temalarının exe içinde çalışması için şarttır
