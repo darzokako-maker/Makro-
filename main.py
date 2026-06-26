@@ -1,367 +1,209 @@
-import time
-import threading
-import cv2
-import numpy as np
-import os
-import sys
 import customtkinter as ctk
-import tkinter as tk
-import mss
-import json
-from groq import Groq
+from pynput import mouse, keyboard
+import threading
+import time
+import ctypes
 
-# Sürücü düzeyinde tuş ve Windows API bileşenleri
-import pydirectinput
-import win32gui
-import win32con
+# Windows API / En Hızlı Tıklama Sabitleri
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
 
-pydirectinput.FAILSAFE = False
-
-# --- GITHUB FILTRE DETOUR / API ANAHTARI PARÇALAMA ---
-API_PART1 = "gsk_OSP3xnd81eQmgfLDtAwxWGdyb3FYe"
-API_PART2 = "4tMIYM9O6IMZ2eeLxReB1iq"
-COMBINED_API_KEY = API_PART1 + API_PART2
-
-# Global Kontroller
-bot_calisiyor = False
-baslat_durdur_tusu = "f6"
-olta_at_tusu = "2"
-balik_cek_tusu = "3"
-hareket_hassasiyeti = 50
-
-# Katman/Çerçeve Global Değişkenleri
-overlay_pencere = None
-canvas = None
-mevcut_kare_id = None
-
-# Algılama Ayarları (Lokal Filtreler İçin)
-MODEL_YOLU = "olta_modeli.pt"  
-SABLON_YOLU = "klasik_olta.png" 
-GUVEN_ESIGI = 0.15             
-
-def kaynak_yolu(goreli_yol):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, goreli_yol)
-
-# YOLOv8 Yüklemesi
-try:
-    from ultralytics import YOLO
-    model = YOLO(kaynak_yolu(MODEL_YOLU))
-    yolo_aktif = True
-except Exception as e:
-    yolo_aktif = False
-
-# ORB Hazırlığı
-orb = cv2.ORB_create(nfeatures=500)
-sablon_bgr = cv2.imread(kaynak_yolu(SABLON_YOLU))
-if sablon_bgr is not None:
-    sablon_gri = cv2.cvtColor(sablon_bgr, cv2.COLOR_BGR2GRAY)
-    kp_sablon, des_sablon = orb.detectAndCompute(sablon_gri, None)
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-else:
-    des_sablon = None
-
-# Groq İstemcisi Llama 3.3 İçin Başlatılıyor
-try:
-    groq_client = Groq(api_key=COMBINED_API_KEY)
-except Exception as e:
-    groq_client = None
-
-def oyuna_tus_gonder_directx(tus_str):
-    try:
-        pydirectinput.press(tus_str.lower())
-        time.sleep(0.05)
-    except Exception as e:
-        print(f"[Tuş Hatası]: {e}")
-
-# --- HER KOŞULDA ÇİZEN HAYALET KATMAN SİSTEMİ ---
-def hayalet_katman_olustur():
-    global overlay_pencere, canvas
-    overlay_pencere = tk.Tk()
-    overlay_pencere.title("HayaletKare")
-    ekran_w = overlay_pencere.winfo_screenwidth()
-    ekran_h = overlay_pencere.winfo_screenheight()
-    overlay_pencere.geometry(f"{ekran_w}x{ekran_h}+0+0")
-    overlay_pencere.overrideredirect(True)
-    overlay_pencere.config(bg="purple")
-    overlay_pencere.attributes("-topmost", True)
-    
-    try:
-        hwnd = win32gui.GetParent(overlay_pencere.winfo_id())
-        istil = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, istil | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT)
-        overlay_pencere.attributes("-transparentcolor", "purple")
-    except:
-        pass
-    
-    canvas = tk.Canvas(overlay_pencere, width=ekran_w, height=ekran_h, bg="purple", highlightthickness=0)
-    canvas.pack()
-    overlay_pencere.mainloop()
-
-def hayalet_kare_ciz(x1, y1, x2, y2):
-    global canvas, mevcut_kare_id, overlay_pencere
-    if canvas and overlay_pencere:
-        try:
-            if mevcut_kare_id:
-                canvas.delete(mevcut_kare_id)
-            mevcut_kare_id = canvas.create_rectangle(x1, y1, x2, y2, outline="red", width=3)
-            overlay_pencere.update_idletasks()
-            overlay_pencere.update()
-        except:
-            pass
-
-def hayalet_kare_temizle():
-    global canvas, mevcut_kare_id
-    if canvas and mevcut_kare_id:
-        try:
-            canvas.delete(mevcut_kare_id)
-            mevcut_kare_id = None
-        except:
-            pass
-
-# --- LLAMA 3.3 VERSATILE ANALİZ MOTORU (HAFİF VE HIZLI METİN MODELİ) ---
-def llama_ile_konum_onayla(aday_koordinatlar, log_callback):
-    if groq_client is None or not aday_koordinatlar: return None
-    try:
-        log_callback("[*] Llama 3.3 Versatile üzerinden veri matrisi filtreleniyor...")
-        
-        # Büyük resim göndermek yerine sadece hafif koordinat verilerini text olarak gönderiyoruz
-        prompt_mesaj = (
-            f"Bir oyun ekranında tespit edilen olta adaylarının piksel koordinat listesi şudur: {aday_koordinatlar}. "
-            "Bu listeden alan büyüklüğü ve dizilimi en mantıklı olan tek bir koordinatı seç. "
-            "Sadece şu JSON formatında cevap ver, başka hiçbir açıklama ekleme: "
-            "{'x_min': sayı, 'y_min': sayı, 'x_max': sayı, 'y_max': sayı}"
-        )
-
-        completion = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile", # Sadece Llama 3.3 Versatile kullanımı sağlandı
-            messages=[{"role": "user", "content": prompt_mesaj}],
-            temperature=0.1,
-            response_format={"type": "json_object"}
-        )
-        koordinatlar = json.loads(completion.choices[0].message.content)
-        return (int(koordinatlar['x_min']), int(koordinatlar['y_min']), int(koordinatlar['x_max']), int(koordinatlar['y_max']))
-    except Exception as e:
-        log_callback(f"[-] Llama 3.3 Analiz Hatası: {e}")
-    return None
-
-# --- GELİŞMİŞ LOKAL TAKİP FİLTRELERİ (YOLO, ORB, CANNY) ---
-def lokal_alan_icinde_milimetrik_ara(tarama_alani):
-    if yolo_aktif:
-        sonuclar = model.predict(source=tarama_alani, conf=GUVEN_ESIGI, verbose=False)
-        for sonuc in sonuclar:
-            for kutu in sonuc.boxes:
-                x1, y1, x2, y2 = map(int, kutu.xyxy[0].tolist())
-                return {"top": y1 - 5, "left": x1 - 5, "width": (x2 - x1) + 10, "height": (y2 - y1) + 10, "coords": (x1, y1, x2, y2)}
-
-    img_gri = cv2.cvtColor(tarama_alani, cv2.COLOR_BGR2GRAY)
-
-    if des_sablon is not None:
-        kp_sahne, des_sahne = orb.detectAndCompute(img_gri, None)
-        if des_sahne is not None:
-            eslesmeler = bf.match(des_sablon, des_sahne)
-            eslesmeler = sorted(eslesmeler, key=lambda x: x.distance)
-            if len(eslesmeler) > 3:
-                noktalar = np.array([kp_sahne[m.trainIdx].pt for m in eslesmeler[:8]])
-                x_min, y_min = np.min(noktalar, axis=0)
-                x_max, y_max = np.max(noktalar, axis=0)
-                if 10 < (x_max - x_min) < 150 and 10 < (y_max - y_min) < 150:
-                    return {
-                        "top": int(y_min) - 10, "left": int(x_min) - 10,
-                        "width": int(x_max - x_min) + 20, "height": int(y_max - y_min) + 20,
-                        "coords": (int(x_min), int(y_min), int(x_max), int(y_max))
-                    }
-
-    parlaklik_filtresi = cv2.threshold(img_gri, 200, 255, cv2.THRESH_BINARY)[1]
-    kenarlar = cv2.Canny(parlaklik_filtresi, 50, 150)
-    cizgiler = cv2.HoughLinesP(kenarlar, 1, np.pi/180, threshold=15, minLineLength=12, maxLineGap=4)
-    if cizgiler is not None:
-        for cizgi in cizgiler:
-            x1, y1, x2, y2 = cizgi[0]
-            if abs(x2 - x1) < abs(y2 - y1) * 2: 
-                return {
-                    "top": min(y1, y2) - 15, "left": min(x1, x2) - 15,
-                    "width": abs(x2 - x1) + 30, "height": abs(y2 - y1) + 30,
-                    "coords": (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-                }
-    return None
-
-def balik_botu_dongusu(log_callback):
-    global bot_calisiyor
-    log_callback("[+] Llama 3.3 Versatile Ultra-Light Motor Devrede!")
-    time.sleep(1.0)
-    
-    with mss.mss() as sct:
-        ekran_boyutu = sct.monitors[1]
-        
-        while bot_calisiyor:
-            log_callback(f"[+] Olta Atılıyor... Tuş: {olta_at_tusu}")
-            oyuna_tus_gonder_directx(olta_at_tusu)
-            
-            time.sleep(3.6)
-            if not bot_calisiyor: break
-
-            # Ekran matris analizi
-            ekran = sct.grab(ekran_boyutu)
-            img_bgr = cv2.cvtColor(np.array(ekran), cv2.COLOR_BGRA2BGR)
-            img_gri = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-            
-            # Yerel tarayıcı ile aday alanları belirleme (Hızlı ön filtreleme)
-            adaylar = []
-            parlaklik = cv2.threshold(img_gri, 210, 255, cv2.THRESH_BINARY)[1]
-            konturlar, _ = cv2.findContours(parlaklik, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for k in konturlar:
-                x, y, w, h = cv2.boundingRect(k)
-                if 15 < w < 120 and 15 < h < 120:
-                    adaylar.append({"x_min": x, "y_min": y, "x_max": x+w, "y_max": y+h})
-            
-            # Eğer yerel ön filtre aday bulamadıysa ekranın merkezini güvenli bölge seç
-            if not adaylar:
-                mid_x, mid_y = ekran_boyutu["width"] // 2, ekran_boyutu["height"] // 2
-                adaylar.append({"x_min": mid_x-100, "y_min": mid_y-100, "x_max": mid_x+100, "y_max": mid_y+100})
-
-            # Belirlenen aday listesini Llama 3.3 Versatile'a süzmesi için gönderiyoruz
-            llama_koordinat = llama_ile_konum_onayla(adaylar[:5], log_callback)
-            
-            if not llama_koordinat:
-                log_callback("[-] Llama 3.3 karar veremedi, döngü yenileniyor...")
-                continue
-                
-            gx1, gy1, gx2, gy2 = llama_koordinat
-            top = max(0, gy1 - 40)
-            left = max(0, gx1 - 40)
-            width = min(ekran_boyutu["width"] - left, (gx2 - gx1) + 80)
-            height = min(ekran_boyutu["height"] - top, (gy2 - gy1) + 80)
-
-            eski_kare = None
-            hareket_bekleme_baslangic = time.time()
-
-            log_callback("[*] Llama 3.3 hedefi onayladı. Yerel kilitlenme aktif.")
-
-            while bot_calisiyor and (time.time() - hareket_bekleme_baslangic < 25):
-                try:
-                    mini_bölge_koordinat = {"top": top, "left": left, "width": width, "height": height}
-                    mini_ekran = sct.grab(mini_bölge_koordinat)
-                    tarama_alani = cv2.cvtColor(np.array(mini_ekran), cv2.COLOR_BGRA2BGR)
-
-                    bulunan = lokal_alan_icinde_milimetrik_ara(tarama_alani)
-                    
-                    olta_izleme_alani = mini_bölge_koordinat
-                    if bulunan:
-                        olta_izleme_alani = {
-                            "top": bulunan["top"] + top,
-                            "left": bulunan["left"] + left,
-                            "width": bulunan["width"],
-                            "height": bulunan["height"]
-                        }
-                        cx1, cy1, cx2, cy2 = bulunan["coords"]
-                        hayalet_kare_ciz(cx1 + left, cy1 + top, cx2 + left, cy2 + top)
-                    else:
-                        hayalet_kare_ciz(gx1, gy1, gx2, gy2)
-
-                    anlik_izleme_ekrani = sct.grab(olta_izleme_alani)
-                    yeni_kare = cv2.cvtColor(np.array(anlik_izleme_ekrani), cv2.COLOR_BGRA2GRAY)
-
-                    if eski_kare is not None:
-                        fark = cv2.absdiff(eski_kare, yeni_kare)
-                        hareket_miktari = np.sum(fark > 30)
-
-                        if hareket_miktari > hareket_hassasiyeti: 
-                            log_callback(f"[!] BALIK VURDU! Çekiliyor...")
-                            oyuna_tus_gonder_directx(balik_cek_tusu)
-                            time.sleep(3.0)
-                            break
-                    eski_kare = yeni_kare
-                except:
-                    pass
-                time.sleep(0.03)
-
-            hayalet_kare_temizle()
-            time.sleep(1.0)
-
-class BotArayuz(ctk.CTk):
+class YahyaUltimateMacro(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Nostale Llama 3.3 Versatile Bot v12.0")
-        self.geometry("460x480") 
-        self.resizable(False, False)
+
+        # Pencere Ayarları
+        self.title("Yahya Yapımı - Ultimate Pro v5 (Nihai Akış)")
+        self.geometry("550x950")
         ctk.set_appearance_mode("dark")
         
-        self.lbl_baslik = ctk.CTkLabel(self, text="Nostale Llama 3.3 + Yerel Filtre Botu", font=("Arial", 15, "bold"))
-        self.lbl_baslik.pack(pady=12)
+        # --- DEĞİŞKENLER ---
+        self.is_cps_active = False     
+        self.is_rod_active = False     
         
-        self.frame_ayarlar = ctk.CTkFrame(self)
-        self.frame_ayarlar.pack(pady=5, padx=20, fill="x")
+        self.cps_key = "b"             
+        self.rod_key = "y"             
         
-        self.lbl_bd = ctk.CTkLabel(self.frame_ayarlar, text="Başlat/Durdur Tuşu:", font=("Arial", 12))
-        self.lbl_bd.grid(row=0, column=0, padx=15, pady=6, sticky="w")
-        self.ent_bd = ctk.CTkEntry(self.frame_ayarlar, width=120)
-        self.ent_bd.insert(0, baslat_durdur_tusu.upper())
-        self.ent_bd.grid(row=0, column=1, padx=15, pady=6)
+        self.cps = 14
+        self.combo_cps = 14            
+        self.rod_select_ms = 45        
+        self.rod_cast_ms = 45          
+        self.global_ms_offset = 0      
         
-        self.lbl_olta = ctk.CTkLabel(self.frame_ayarlar, text="Olta Atma Tuşu:", font=("Arial", 12))
-        self.lbl_olta.grid(row=1, column=0, padx=15, pady=6, sticky="w")
-        self.ent_olta = ctk.CTkEntry(self.frame_ayarlar, width=120)
-        self.ent_olta.insert(0, olta_at_tusu)
-        self.ent_olta.grid(row=1, column=1, padx=15, pady=6)
+        self.sword_slot = "1"
+        self.rod_slot = "3"
         
-        self.lbl_cek = ctk.CTkLabel(self.frame_ayarlar, text="Balık Çekme Tuşu:", font=("Arial", 12))
-        self.lbl_cek.grid(row=2, column=0, padx=15, pady=6, sticky="w")
-        self.ent_cek = ctk.CTkEntry(self.frame_ayarlar, width=120)
-        self.ent_cek.insert(0, balik_cek_tusu)
-        self.ent_cek.grid(row=2, column=1, padx=15, pady=6)
+        self.waiting_for_key = None
+        self.keyboard_controller = keyboard.Controller()
+        self.left_pressed = False
+        
+        # Yazılımsal döngü koruma bayrağı
+        self.ignore_software_click = False
 
-        self.lbl_has = ctk.CTkLabel(self.frame_ayarlar, text="Algılama Hassasiyeti:", font=("Arial", 12))
-        self.lbl_has.grid(row=3, column=0, padx=15, pady=6, sticky="w")
-        self.ent_has = ctk.CTkEntry(self.frame_ayarlar, width=120)
-        self.ent_has.insert(0, str(hareket_hassasiyeti))
-        self.ent_has.grid(row=3, column=1, padx=15, pady=6)
-        
-        self.btn_kaydet = ctk.CTkButton(self, text="Llama 3.3 Modunda Başlat", font=("Arial", 12, "bold"), command=self.ayarlari_uygula)
-        self.btn_kaydet.pack(pady=12)
-        
-        self.txt_log = ctk.CTkTextbox(self, height=130, width=420, font=("Consolas", 11))
-        self.txt_log.pack(pady=5, padx=20)
-        
-        import keyboard
-        keyboard.unhook_all()
-        keyboard.add_hotkey(baslat_durdur_tusu.lower(), self.tetikleyici)
-        
-        threading.Thread(target=hayalet_katman_olustur, daemon=True).start()
-        self.log_yaz("[+] Sadece Llama 3.3 Versatile (Pure Text API) Modu Aktif.")
-        
-    def log_yaz(self, mesaj):
-        self.txt_log.insert("end", mesaj + "\n")
-        self.txt_log.see("end")
+        # --- ARAYÜZ ---
+        self.label_head = ctk.CTkLabel(self, text="YAHYA YAPIMI", font=("Impact", 35), text_color="#00FF7F")
+        self.label_head.pack(pady=10)
 
-    def ayarlari_uygula(self):
-        global baslat_durdur_tusu, olta_at_tusu, balik_cek_tusu, hareket_hassasiyeti
-        baslat_durdur_tusu = self.ent_bd.get().lower()
-        olta_at_tusu = self.ent_olta.get()
-        balik_cek_tusu = self.ent_cek.get()
-        try: hareket_hassasiyeti = int(self.ent_has.get())
-        except: hareket_hassasiyeti = 50
-        
-        import keyboard
-        keyboard.unhook_all()
-        keyboard.add_hotkey(baslat_durdur_tusu, self.tetikleyici)
-        self.log_yaz(f"[+] Ayarlar güncellendi. Kısayol: '{baslat_durdur_tusu.upper()}'")
+        # Normal CPS Paneli
+        self.cps_frame = ctk.CTkFrame(self, border_width=1)
+        self.cps_frame.pack(pady=5, padx=20, fill="x")
+        self.label_cps = ctk.CTkLabel(self.cps_frame, text=f"Normal Saldırı Hızı: {self.cps} CPS", font=("Arial", 13, "bold"))
+        self.label_cps.pack(pady=5)
+        self.slider_cps = ctk.CTkSlider(self.cps_frame, from_=1, to=30, command=self.update_cps)
+        self.slider_cps.set(self.cps); self.slider_cps.pack(pady=5, padx=10)
 
-    def tetikleyici(self):
-        global bot_calisiyor
-        if not bot_calisiyor:
-            bot_calisiyor = True
-            threading.Thread(target=balik_botu_dongusu, args=(self.log_yaz,), daemon=True).start()
-        else:
-            bot_calisiyor = False
-            hayalet_kare_temizle()
-            self.log_yaz("[-] Bot durduruldu.")
+        # Kombo CPS Paneli
+        self.combo_cps_frame = ctk.CTkFrame(self, border_width=1, border_color="#1f538d")
+        self.combo_cps_frame.pack(pady=5, padx=20, fill="x")
+        self.label_combo_cps = ctk.CTkLabel(self.combo_cps_frame, text=f"Kombo Vuruş Hızı (Kılıç Hasarı): {self.combo_cps} CPS", font=("Arial", 13, "bold"), text_color="#63B8FF")
+        self.label_combo_cps.pack(pady=5)
+        self.slider_combo_cps = ctk.CTkSlider(self.combo_cps_frame, from_=1, to=30, command=self.update_combo_cps, button_color="#1f538d")
+        self.slider_combo_cps.set(self.combo_cps); self.slider_combo_cps.pack(pady=5, padx=10)
+
+        # Slot Ayarları Paneli
+        self.slot_frame = ctk.CTkFrame(self, border_width=1)
+        self.slot_frame.pack(pady=5, padx=20, fill="x")
+        ctk.CTkLabel(self.slot_frame, text="Slot Ayarları (Klavye Tuşları)", font=("Arial", 12, "bold")).pack(pady=2)
+        self.inner_slot_frame = ctk.CTkFrame(self.slot_frame, fg_color="transparent")
+        self.inner_slot_frame.pack(pady=5)
+        
+        ctk.CTkLabel(self.inner_slot_frame, text="Kılıç Slotu:").grid(row=0, column=0, padx=5)
+        self.entry_sword = ctk.CTkEntry(self.inner_slot_frame, width=40, justify="center")
+        self.entry_sword.insert(0, self.sword_slot); self.entry_sword.grid(row=0, column=1, padx=5)
+        self.entry_sword.bind("<KeyRelease>", lambda e: self.update_slots())
+
+        ctk.CTkLabel(self.inner_slot_frame, text="Olta Slotu:").grid(row=0, column=2, padx=5)
+        self.entry_rod = ctk.CTkEntry(self.inner_slot_frame, width=40, justify="center")
+        self.entry_rod.insert(0, self.rod_slot); self.entry_rod.grid(row=0, column=3, padx=5)
+        self.entry_rod.bind("<KeyRelease>", lambda e: self.update_slots())
+
+        # Ofset Paneli
+        self.global_frame = ctk.CTkFrame(self, border_width=2, border_color="#FF4500")
+        self.global_frame.pack(pady=10, padx=20, fill="x")
+        self.lbl_global = ctk.CTkLabel(self.global_frame, text=f"GENEL GECİKME OFSETİ: {self.global_ms_offset}ms", text_color="#FF4500", font=("Arial", 12, "bold"))
+        self.lbl_global.pack(pady=5)
+        self.sld_global = ctk.CTkSlider(self.global_frame, from_=-50, to=150, command=self.update_global_offset)
+        self.sld_global.set(self.global_ms_offset); self.sld_global.pack(pady=5, padx=10)
+
+        # MS Ayarları
+        self.ms_frame = ctk.CTkFrame(self, border_width=1)
+        self.ms_frame.pack(pady=10, padx=20, fill="x")
+        self.lbl_sel = ctk.CTkLabel(self.ms_frame, text=f"Olta Seçim: {self.rod_select_ms}ms"); self.lbl_sel.pack()
+        self.sld_sel = ctk.CTkSlider(self.ms_frame, from_=5, to=200, command=lambda v: self.update_ms(v, "sel")); self.sld_sel.set(self.rod_select_ms); self.sld_sel.pack(padx=10)
+        self.lbl_cast = ctk.CTkLabel(self.ms_frame, text=f"Kılıca Dönüş: {self.rod_cast_ms}ms"); self.lbl_cast.pack()
+        self.sld_cast = ctk.CTkSlider(self.ms_frame, from_=5, to=200, command=lambda v: self.update_ms(v, "cast")); self.sld_cast.set(self.rod_cast_ms); self.sld_cast.pack(padx=10)
+
+        # Butonlar
+        self.btn_cps_key = ctk.CTkButton(self, text=f"CPS MAKRO TUŞU: {self.cps_key.upper()}", height=40, command=lambda: self.start_binding("cps"))
+        self.btn_cps_key.pack(pady=5, padx=20, fill="x")
+        self.btn_rod_key = ctk.CTkButton(self, text=f"OTOMATİK KOMBO TUŞU: {self.rod_key.upper()}", height=40, fg_color="#1f538d", command=lambda: self.start_binding("rod"))
+        self.btn_rod_key.pack(pady=5, padx=20, fill="x")
+
+        self.start_listeners()
+
+    def update_cps(self, v): self.cps = int(v); self.label_cps.configure(text=f"Normal Saldırı Hızı: {self.cps} CPS")
+    def update_combo_cps(self, v): self.combo_cps = int(v); self.label_combo_cps.configure(text=f"Kombo Vuruş Hızı (Kılıç Hasarı): {self.combo_cps} CPS")
+    def update_global_offset(self, v): self.global_ms_offset = int(v); self.lbl_global.configure(text=f"GENEL GECİKME OFSETİ: {self.global_ms_offset}ms")
+    def update_ms(self, v, type):
+        val = int(v)
+        if type == "sel": self.rod_select_ms = val; self.lbl_sel.configure(text=f"Olta Seçim: {val}ms")
+        elif type == "cast": self.rod_cast_ms = val; self.lbl_cast.configure(text=f"Kılıca Dönüş: {val}ms")
+    
+    def update_slots(self):
+        self.sword_slot = self.entry_sword.get() or "1"
+        self.rod_slot = self.entry_rod.get() or "3"
+
+    def start_binding(self, target):
+        self.waiting_for_key = target
+        btn = self.btn_cps_key if target == "cps" else self.btn_rod_key
+        btn.configure(text="TUŞ BEKLENİYOR...", fg_color="#702b2b")
+
+    def on_press(self, key):
+        try: k = key.char
+        except: k = key.name
+        if self.waiting_for_key:
+            if self.waiting_for_key == "cps": self.cps_key = k; self.btn_cps_key.configure(text=f"CPS MAKRO TUŞU: {self.cps_key.upper()}", fg_color="#3b3b3b")
+            else: self.rod_key = k; self.btn_rod_key.configure(text=f"OTOMATİK KOMBO TUŞU: {self.rod_key.upper()}", fg_color="#1f538d")
+            self.waiting_for_key = None
+            return
+        if k == self.cps_key: self.is_cps_active = not self.is_cps_active
+        if k == self.rod_key: self.is_rod_active = not self.is_rod_active
+
+    def fast_click(self):
+        """En kararlı win32api sol tık tetiklemesi."""
+        self.ignore_software_click = True
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+    def fast_right_click(self):
+        """Gecikmesiz sağ tık sinyali (Olta)."""
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+
+    def click_engine(self):
+        """
+        Sol tık hız kontrolü tamamen buraya bağlandı.
+        Hızlar birbirine karışmaz, slider'dan ne seçtiysen tam olarak onu basar.
+        """
+        while True:
+            if self.left_pressed:
+                if self.is_rod_active:
+                    # Kombo tuşu açıksa ve sol tıka basılıyorsa net bir şekilde Kombo CPS kullan
+                    self.fast_click()
+                    time.sleep(1.0 / max(1, self.combo_cps))
+                elif self.is_cps_active:
+                    # Kombo kapalı ama normal makro açıksa normal CPS kullan
+                    self.fast_click()
+                    time.sleep(1.0 / max(1, self.cps))
+                else:
+                    time.sleep(0.01)
+            else:
+                time.sleep(0.01)
+
+    def full_auto_rod_engine(self):
+        """
+        Kılıç tıklamaları yukarıda akarken bu motor sadece arka planda
+        belirlenen sürelerde bir kez olta at-çek yapıp kılıca geri döner.
+        """
+        while True:
+            if self.is_rod_active and self.left_pressed:
+                sel_delay = max(2, self.rod_select_ms + self.global_ms_offset) / 1000.0
+                cast_delay = max(2, self.rod_cast_ms + self.global_ms_offset) / 1000.0
+                
+                # 1. Oltayı seç (Hasar yukarda hala devam ediyor)
+                self.keyboard_controller.press(self.rod_slot); self.keyboard_controller.release(self.rod_slot)
+                time.sleep(sel_delay)
+                
+                # 2. Oltayı fırlat
+                self.fast_right_click()
+                time.sleep(cast_delay)
+                
+                # 3. Hemen kılıç slotuna geri dön
+                self.keyboard_controller.press(self.sword_slot); self.keyboard_controller.release(self.sword_slot)
+                
+                # Bir sonraki olta atış döngüsünden önceki sabit PvP beklemesi (0.6 saniye idealdir)
+                time.sleep(0.6)
+            else:
+                time.sleep(0.05)
+
+    def start_listeners(self):
+        keyboard.Listener(on_press=self.on_press).start()
+        
+        def on_click(x, y, btn, prs):
+            if btn == mouse.Button.left:
+                if self.ignore_software_click:
+                    if not prs:
+                        self.ignore_software_click = False
+                    return
+                self.left_pressed = prs
+                
+        mouse.Listener(on_click=on_click).start()
+        threading.Thread(target=self.click_engine, daemon=True).start()
+        threading.Thread(target=self.full_auto_rod_engine, daemon=True).start()
 
 if __name__ == "__main__":
-    app = BotArayuz()
+    app = YahyaUltimateMacro()
     app.mainloop()
-                                     
+    
