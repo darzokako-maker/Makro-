@@ -3,8 +3,9 @@ from pynput import mouse, keyboard
 import threading
 import time
 import ctypes
+import random
 
-# Windows API / En Hızlı Tıklama Sabitleri
+# Windows API / Çekirdek Seviyesi Tıklama Sabitleri
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
@@ -15,7 +16,7 @@ class YahyaUltimateMacro(ctk.CTk):
         super().__init__()
 
         # Pencere Ayarları
-        self.title("Yahya Yapımı - Ultimate Pro v5 (Nihai Akış)")
+        self.title("Yahya Yapımı - Ultimate Pro v6 (Kararlı İnsansı Akış)")
         self.geometry("550x950")
         ctk.set_appearance_mode("dark")
         
@@ -39,7 +40,6 @@ class YahyaUltimateMacro(ctk.CTk):
         self.keyboard_controller = keyboard.Controller()
         self.left_pressed = False
         
-        # Yazılımsal döngü koruma bayrağı
         self.ignore_software_click = False
 
         # --- ARAYÜZ ---
@@ -131,59 +131,72 @@ class YahyaUltimateMacro(ctk.CTk):
         if k == self.cps_key: self.is_cps_active = not self.is_cps_active
         if k == self.rod_key: self.is_rod_active = not self.is_rod_active
 
-    def fast_click(self):
-        """En kararlı win32api sol tık tetiklemesi."""
+    def execute_real_mouse_click(self, target_cps):
+        """
+        Hem düzenli vuran hem de gerçek mousedan geliyormuş gibi 
+        hafif insansı (mikro sapmalı) kararlı Syscall vuruş motoru.
+        """
+        # Seçilen CPS için gereken temel döngü süresi (Örn: 14 CPS için ~0.071 saniye)
+        base_cycle_time = 1.0 / max(1, target_cps)
+        
+        # Düzeni bozmayacak ama vuruş kaydını (hitreg) mükemmelleştirecek çok hafif insansı mikro esneme (+-%5)
+        jitter_range = base_cycle_time * 0.05
+        human_jitter = random.uniform(-jitter_range, jitter_range)
+        
+        final_cycle_time = max(0.004, base_cycle_time + human_jitter)
+        
+        # Gerçek mouselarda tuşa basılma (hold) ve bırakılma süresi mekaniktir.
+        hold_duration = final_cycle_time * 0.35  # Tuşun aşağıda kalma süresi
+        release_duration = final_cycle_time - hold_duration  # Tuşun yukarı kalkma süresi
+
+        # Doğrudan Windows Çekirdeğine Gönderim (Syscall)
         self.ignore_software_click = True
         ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(hold_duration)
+        
         ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(max(0.001, release_duration))
 
     def fast_right_click(self):
-        """Gecikmesiz sağ tık sinyali (Olta)."""
+        """Olta için stabil sağ tık çağrısı."""
         ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+        time.sleep(0.015) # Kısa basılı kalma payı
         ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
 
     def click_engine(self):
-        """
-        Sol tık hız kontrolü tamamen buraya bağlandı.
-        Hızlar birbirine karışmaz, slider'dan ne seçtiysen tam olarak onu basar.
-        """
+        """Sol tık vuruş kontrolü. Akış net, kararlı ve slider'a %100 bağlıdır."""
         while True:
             if self.left_pressed:
                 if self.is_rod_active:
-                    # Kombo tuşu açıksa ve sol tıka basılıyorsa net bir şekilde Kombo CPS kullan
-                    self.fast_click()
-                    time.sleep(1.0 / max(1, self.combo_cps))
+                    # Kombo aktifse arayüzdeki mavi kaydırıcıyı (Combo CPS) kullanır
+                    self.execute_real_mouse_click(target_cps=self.combo_cps)
                 elif self.is_cps_active:
-                    # Kombo kapalı ama normal makro açıksa normal CPS kullan
-                    self.fast_click()
-                    time.sleep(1.0 / max(1, self.cps))
+                    # Normal makro aktifse üstteki kaydırıcıyı (Normal CPS) kullanır
+                    self.execute_real_mouse_click(target_cps=self.cps)
                 else:
                     time.sleep(0.01)
             else:
                 time.sleep(0.01)
 
     def full_auto_rod_engine(self):
-        """
-        Kılıç tıklamaları yukarıda akarken bu motor sadece arka planda
-        belirlenen sürelerde bir kez olta at-çek yapıp kılıca geri döner.
-        """
+        """Kılıç vuruşları milisaniyesi şaşmadan akarken bu motor arka planda olta döngüsünü yönetir."""
         while True:
             if self.is_rod_active and self.left_pressed:
                 sel_delay = max(2, self.rod_select_ms + self.global_ms_offset) / 1000.0
                 cast_delay = max(2, self.rod_cast_ms + self.global_ms_offset) / 1000.0
                 
-                # 1. Oltayı seç (Hasar yukarda hala devam ediyor)
+                # 1. Oltayı eline al
                 self.keyboard_controller.press(self.rod_slot); self.keyboard_controller.release(self.rod_slot)
                 time.sleep(sel_delay)
                 
-                # 2. Oltayı fırlat
+                # 2. Oltayı fırlat (Rekt)
                 self.fast_right_click()
                 time.sleep(cast_delay)
                 
-                # 3. Hemen kılıç slotuna geri dön
+                # 3. Kılıca geri dön (Düzgün hasar vermeye devam et)
                 self.keyboard_controller.press(self.sword_slot); self.keyboard_controller.release(self.sword_slot)
                 
-                # Bir sonraki olta atış döngüsünden önceki sabit PvP beklemesi (0.6 saniye idealdir)
+                # İdeal Rekt Combo ritmi beklemesi (0.6 saniye)
                 time.sleep(0.6)
             else:
                 time.sleep(0.05)
